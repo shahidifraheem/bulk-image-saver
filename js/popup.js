@@ -1,104 +1,124 @@
-// Initialize state
-let allSelected = false;
+document.addEventListener('DOMContentLoaded', function () {
+    // Initialize state
+    let allSelected = false;
+    const statusEl = document.getElementById('status');
+    const imageListEl = document.getElementById('imageList');
+    const findBtn = document.getElementById('findImages');
+    const downloadBtn = document.getElementById('downloadSelected');
+    const toggleBtn = document.getElementById('toggleSelectAll');
 
-document.getElementById('findImages').addEventListener('click', () => {
-    document.getElementById('status').textContent = 'Scanning page for images...';
-    document.getElementById('imageList').innerHTML = '';
-    document.getElementById('downloadSelected').disabled = true;
-    document.getElementById('toggleSelectAll').style.display = 'none';
+    // Find Images Button
+    findBtn.addEventListener('click', () => {
+        statusEl.textContent = 'Scanning page for images...';
+        imageListEl.innerHTML = '';
+        downloadBtn.disabled = true;
+        toggleBtn.style.display = 'none';
 
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        chrome.scripting.executeScript({
-            target: { tabId: tabs[0].id },
-            files: ['js/content.js']
-        }, () => {
-            if (chrome.runtime.lastError) {
-                document.getElementById('status').textContent = 'Error: ' + chrome.runtime.lastError.message;
-            }
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+            chrome.scripting.executeScript({
+                target: { tabId: tabs[0].id },
+                files: ['js/content.js']
+            }, () => {
+                if (chrome.runtime.lastError) {
+                    statusEl.textContent = 'Error: ' + chrome.runtime.lastError.message;
+                }
+            });
         });
     });
-});
 
-// Toggle select all functionality
-document.getElementById('toggleSelectAll').addEventListener('click', () => {
-    const checkboxes = document.querySelectorAll('.image-item input[type="checkbox"]');
-
-    allSelected = !allSelected;
-    checkboxes.forEach(checkbox => {
-        checkbox.checked = allSelected;
+    // Toggle Select All
+    toggleBtn.addEventListener('click', () => {
+        const checkboxes = document.querySelectorAll('.image-item input[type="checkbox"]');
+        allSelected = !allSelected;
+        checkboxes.forEach(cb => cb.checked = allSelected);
+        toggleBtn.textContent = allSelected ? 'Unselect All' : 'Select All';
+        downloadBtn.disabled = !allSelected;
     });
 
-    document.getElementById('toggleSelectAll').textContent = allSelected ? 'Unselect All' : 'Select All';
-    document.getElementById('downloadSelected').disabled = !allSelected;
-});
+    // Download Selected
+    downloadBtn.addEventListener('click', () => {
+        const urls = Array.from(
+            document.querySelectorAll('.image-item input[type="checkbox"]:checked')
+        ).map(el => el.dataset.url);
 
-document.getElementById('downloadSelected').addEventListener('click', () => {
-    const checkboxes = document.querySelectorAll('.image-item input[type="checkbox"]:checked');
-    const urls = Array.from(checkboxes).map(checkbox => checkbox.dataset.url);
-
-    if (urls.length === 0) {
-        document.getElementById('status').textContent = 'No images selected';
-        return;
-    }
-
-    document.getElementById('status').textContent = `Downloading ${urls.length} images...`;
-
-    chrome.runtime.sendMessage({ action: "downloadImages", urls: urls }, (response) => {
-        document.getElementById('status').textContent = response.message;
-        allSelected = false;
-        document.getElementById('toggleSelectAll').textContent = 'Select All';
-    });
-});
-
-// Listen for messages from content script
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    if (request.action === "imagesFound") {
-        const imageList = document.getElementById('imageList');
-        imageList.innerHTML = '';
-
-        if (request.images.length === 0) {
-            document.getElementById('status').textContent = 'No images found on this page';
+        if (!urls.length) {
+            statusEl.textContent = 'No images selected';
             return;
         }
 
-        document.getElementById('status').textContent = `Found ${request.images.length} images`;
-        document.getElementById('downloadSelected').disabled = false;
-        document.getElementById('toggleSelectAll').style.display = 'inline-block';
-        document.getElementById('toggleSelectAll').textContent = 'Select All';
+        statusEl.textContent = `Downloading ${urls.length} images...`;
+        chrome.runtime.sendMessage(
+            { action: "downloadImages", urls },
+            (response) => {
+                statusEl.textContent = response?.message || 'Download complete!';
+                allSelected = false;
+                toggleBtn.textContent = 'Select All';
+            }
+        );
+    });
+
+    // Message Listener
+    chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+        if (request.action === "imagesFound") {
+            renderImages(request.images);
+        } else if (request.action === "scanError") {
+            statusEl.textContent = `Error: ${request.error}`;
+        }
+    });
+
+    // Image rendering function
+    function renderImages(images) {
+        imageListEl.innerHTML = '';
+
+        if (!images?.length) {
+            statusEl.textContent = 'No downloadable images found';
+            return;
+        }
+
+        statusEl.textContent = `Found ${images.length} images`;
+        downloadBtn.disabled = false;
+        toggleBtn.style.display = 'inline-block';
+        toggleBtn.textContent = 'Select All';
         allSelected = false;
 
-        request.images.forEach(img => {
-            const div = document.createElement('div');
-            div.className = 'image-item';
+        images.forEach(img => {
+            const item = document.createElement('div');
+            item.className = 'image-item';
 
             const checkbox = document.createElement('input');
             checkbox.type = 'checkbox';
             checkbox.dataset.url = img.url;
             checkbox.checked = false;
-            checkbox.addEventListener('change', () => {
-                const anyChecked = document.querySelectorAll('.image-item input[type="checkbox"]:checked').length > 0;
-                document.getElementById('downloadSelected').disabled = !anyChecked;
-            });
+            checkbox.addEventListener('change', updateDownloadButtonState);
 
             const preview = document.createElement('img');
             preview.className = 'image-preview';
             preview.src = img.url;
+            preview.onerror = () => preview.style.opacity = '0.5';
 
             const info = document.createElement('span');
-            info.textContent = `${img.width}x${img.height} - ${formatBytes(img.size)}`;
+            info.textContent = `${img.width}x${img.height} | ${img.type} | ${formatBytes(img.size)}`;
 
-            div.appendChild(checkbox);
-            div.appendChild(preview);
-            div.appendChild(info);
-            imageList.appendChild(div);
+            item.append(checkbox, preview, info);
+            imageListEl.appendChild(item);
         });
+
+        function updateDownloadButtonState() {
+            const hasSelection = document.querySelectorAll(
+                '.image-item input[type="checkbox"]:checked'
+            ).length > 0;
+            downloadBtn.disabled = !hasSelection;
+        }
+    }
+
+    // Helper function
+    function formatBytes(bytes) {
+        if (!bytes || bytes <= 0) return 'Size unknown';
+        const units = ['B', 'KB', 'MB'];
+        const i = Math.min(
+            Math.floor(Math.log(bytes) / Math.log(1024)),
+            units.length - 1
+        );
+        return `${(bytes / Math.pow(1024, i)).toFixed(i ? 1 : 0)} ${units[i]}`;
     }
 });
-
-function formatBytes(bytes) {
-    if (bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-}
